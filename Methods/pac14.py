@@ -20,7 +20,6 @@ import torch.nn.functional as F
 from torch.autograd.function import Function, once_differentiable
 from torch.nn.parameter import Parameter
 from torch.nn.modules.utils import _pair
-# from torch._thnn import type2bachend
 
 try:
     import pyinn as P
@@ -37,12 +36,7 @@ def _neg_idx(idx):
 
 
 def np_gaussian_2d(width, sigma=-1):
-    """
-    Truncated 2D Gaussian filter
-    :param width: kernel size
-    :param sigma: bandwidth of Gaussian distribution
-    :return:
-    """
+    '''Truncated 2D Gaussian filter'''
     assert width % 2 == 1
     if sigma <= 0:
         sigma = float(width) / 4
@@ -76,7 +70,7 @@ def nd2col(input_nd, kernel_size, stride=1, padding=0, output_padding=0, dilatio
         w_one = input_nd.new_ones(1, 1, 1, 1)
         pad = [(k - 1) * d - p for (k, d, p) in zip(kernel_size, dilation, padding)]
         input_nd = F.conv_transpose2d(input_nd, w_one, stride=stride)
-        input_nd = F.pad(input_nd, [pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]])
+        input_nd = F.pad(input_nd, (pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]))
         stride = _pair(1)
         padding = _pair(0)
 
@@ -111,7 +105,6 @@ class GaussKernel2dFn(Function):
         if not channel_wise:
             diff_sq = diff_sq.sum(dim=1, keepdim=True)
         output = torch.exp(-0.5 * diff_sq)
-        # ctx._backend = type2backend[input.type()]
         ctx.save_for_backward(input, output)
 
         return output
@@ -131,15 +124,9 @@ class GaussKernel2dFn(Function):
         grad_diff = grad.expand_as(cols) * (2 * diff)
         grad_diff[:, :, center_y:center_y + 1, center_x:center_x + 1, :, :] -= \
             grad_diff.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
-        grad_input = grad_output.new()
-        ctx._backend.Im2Col_updateGradInput(ctx._backend.library_state,
-                                            grad_diff.view(bs, ch * ctx.kernel_size[0] * ctx.kernel_size[1], -1),
-                                            grad_input,
-                                            in_h, in_w,
-                                            ctx.kernel_size[0], ctx.kernel_size[1],
-                                            ctx.dilation[0], ctx.dilation[1],
-                                            ctx.padding[0], ctx.padding[1],
-                                            ctx.stride[0], ctx.stride[1])
+
+        grad_input = F.fold(grad_diff.view(bs, ch * ctx.kernel_size[0] * ctx.kernel_size[1], -1),
+                            (in_h, in_w), ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
 
         return grad_input, None, None, None, None, None
 
@@ -160,7 +147,6 @@ class PacConv2dFn(Function):
         ctx.save_for_backward(input if (ctx.needs_input_grad[1] or ctx.needs_input_grad[2]) else None,
                               kernel if (ctx.needs_input_grad[0] or ctx.needs_input_grad[2]) else None,
                               weight if (ctx.needs_input_grad[0] or ctx.needs_input_grad[1]) else None)
-        # ctx._backend = type2backend[input.type()]
 
         cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
 
@@ -195,17 +181,11 @@ class PacConv2dFn(Function):
             in_cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
             in_cols = in_cols.view(bs, in_ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output.new()
             grad_im2col_output = grad_in_mul_k * kernel
             grad_im2col_output = grad_im2col_output.view(bs, -1, out_sz[0] * out_sz[1])
-            ctx._backend.Im2Col_updateGradInput(ctx._backend.library_state,
-                                                grad_im2col_output,
-                                                grad_input,
-                                                ctx.input_size[0], ctx.input_size[1],
-                                                ctx.kernel_size[0], ctx.kernel_size[1],
-                                                ctx.dilation[0], ctx.dilation[1],
-                                                ctx.padding[0], ctx.padding[1],
-                                                ctx.stride[0], ctx.stride[1])
+
+            grad_input = F.fold(grad_im2col_output,
+                                ctx.input_size[:2], ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
         if ctx.needs_input_grad[1]:
             grad_kernel = in_cols * grad_in_mul_k
             grad_kernel = grad_kernel.sum(dim=1, keepdim=True)
@@ -224,7 +204,8 @@ class PacConv2dFn(Function):
 
 class PacConvTranspose2dFn(Function):
     @staticmethod
-    def forward(ctx, input, kernel, weight, bias=None, stride=1, padding=0, output_padding=0, dilation=1, shared_filters=False):
+    def forward(ctx, input, kernel, weight, bias=None, stride=1, padding=0, output_padding=0, dilation=1,
+                shared_filters=False):
         (bs, ch), in_sz = input.shape[:2], input.shape[2:]
         if kernel.size(1) > 1:
             raise ValueError('Non-singleton channel is not allowed for kernel.')
@@ -238,12 +219,11 @@ class PacConvTranspose2dFn(Function):
         ctx.save_for_backward(input if (ctx.needs_input_grad[1] or ctx.needs_input_grad[2]) else None,
                               kernel if (ctx.needs_input_grad[0] or ctx.needs_input_grad[2]) else None,
                               weight if (ctx.needs_input_grad[0] or ctx.needs_input_grad[1]) else None)
-        # ctx._backend = type2backend[input.type()]
 
         w = input.new_ones((ch, 1, 1, 1))
         x = F.conv_transpose2d(input, w, stride=stride, groups=ch)
         pad = [(k - 1) * d - p for (k, d, p) in zip(ctx.kernel_size, ctx.dilation, ctx.padding)]
-        x = F.pad(x, [pad[1], pad[1] + ctx.output_padding[1], pad[0], pad[0] + ctx.output_padding[0]])
+        x = F.pad(x, (pad[1], pad[1] + ctx.output_padding[1], pad[0], pad[0] + ctx.output_padding[0]))
 
         cols = F.unfold(x, ctx.kernel_size, ctx.dilation, _pair(0), _pair(1))
 
@@ -279,22 +259,16 @@ class PacConvTranspose2dFn(Function):
         if ctx.needs_input_grad[1] or ctx.needs_input_grad[2]:
             w = input.new_ones((in_ch, 1, 1, 1))
             x = F.conv_transpose2d(input, w, stride=ctx.stride, groups=in_ch)
-            x = F.pad(x, [pad[1][0], pad[1][1], pad[0][0], pad[0][1]])
+            x = F.pad(x, (pad[1][0], pad[1][1], pad[0][0], pad[0][1]))
             in_cols = F.unfold(x, ctx.kernel_size, ctx.dilation, _pair(0), _pair(1))
             in_cols = in_cols.view(bs, in_ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output.new()
             grad_im2col_output = grad_in_mul_k * kernel
             grad_im2col_output = grad_im2col_output.view(bs, -1, out_sz[0] * out_sz[1])
             im2col_input_sz = [o + (k - 1) * d for (o, k, d) in zip(out_sz, ctx.kernel_size, ctx.dilation)]
-            ctx._backend.Im2Col_updateGradInput(ctx._backend.library_state,
-                                                grad_im2col_output,
-                                                grad_input,
-                                                im2col_input_sz[0], im2col_input_sz[1],
-                                                ctx.kernel_size[0], ctx.kernel_size[1],
-                                                ctx.dilation[0], ctx.dilation[1],
-                                                0, 0,
-                                                1, 1)
+
+            grad_input = F.fold(grad_im2col_output,
+                                im2col_input_sz[:2], ctx.kernel_size, ctx.dilation, 0, 1)
             grad_input = grad_input[:, :, pad[0][0]:-pad[0][1]:ctx.stride[0], pad[1][0]:-pad[1][1]:ctx.stride[1]]
         if ctx.needs_input_grad[1]:
             grad_kernel = in_cols * grad_in_mul_k
@@ -325,7 +299,6 @@ class PacPool2dFn(Function):
         ctx.stride = _pair(stride)
         ctx.save_for_backward(input if ctx.needs_input_grad[1] else None,
                               kernel if ctx.needs_input_grad[0] else None)
-        # ctx._backend = type2backend[input.type()]
 
         cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
 
@@ -341,17 +314,11 @@ class PacPool2dFn(Function):
         grad_input = grad_kernel = None
         (bs, ch), out_sz = grad_output.shape[:2], grad_output.shape[2:]
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output.new()
             grad_im2col_output = torch.einsum('ijmn,izklmn->ijklmn', (grad_output, kernel))
             grad_im2col_output = grad_im2col_output.view(bs, -1, out_sz[0] * out_sz[1])
-            ctx._backend.Im2Col_updateGradInput(ctx._backend.library_state,
-                                                grad_im2col_output,
-                                                grad_input,
-                                                ctx.input_size[0], ctx.input_size[1],
-                                                ctx.kernel_size[0], ctx.kernel_size[1],
-                                                ctx.dilation[0], ctx.dilation[1],
-                                                ctx.padding[0], ctx.padding[1],
-                                                ctx.stride[0], ctx.stride[1])
+
+            grad_input = F.fold(grad_im2col_output,
+                                ctx.input_size[:2], ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
         if ctx.needs_input_grad[1]:
             cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
             cols = cols.view(bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
@@ -448,7 +415,8 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
 
     if norm is not None:
         empty_mask = (norm == 0)
-        output = output / (norm + torch.tensor(empty_mask, dtype=input.dtype, device=input.device))
+        # output = output / (norm + torch.tensor(empty_mask, dtype=input.dtype, device=input.device))
+        output = output / (norm + empty_mask.clone().detach())
         output_mask = (1 - empty_mask) if output_mask else None
     else:
         output_mask = None
@@ -494,7 +462,7 @@ def pacconv_transpose2d(input, kernel, weight, bias=None, stride=1, padding=0, o
         w = input.new_ones((ch, 1, 1, 1))
         x = F.conv_transpose2d(input, w, stride=stride, groups=ch)
         pad = [(kernel_size[i] - 1) * dilation[i] - padding[i] for i in range(2)]
-        x = F.pad(x, [pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]])
+        x = F.pad(x, (pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]))
         output = pacconv2d(x, kernel, weight.permute(1, 0, 2, 3), bias, dilation=dilation,
                            shared_filters=shared_filters, native_impl=True)
     else:
@@ -699,7 +667,6 @@ class PacConv2d(_PacConvNd):
         normalize_kernel (bool): Default: False
         shared_filters (bool): Default: False
         filler (str): 'uniform'. Default: 'uniform'
-
     Note:
         - kernel_size only accepts odd numbers
         - padding should not be larger than :math:`dilation * (kernel_size - 1) / 2`
@@ -749,7 +716,6 @@ class PacConvTranspose2d(_PacConvNd):
         normalize_kernel (bool): Default: False
         shared_filters (bool): Default: False
         filler (str): 'uniform' | 'linear'. Default: 'uniform'
-
     Note:
         - kernel_size only accepts odd numbers
         - padding should not be larger than :math:`dilation * (kernel_size - 1) / 2`
@@ -801,7 +767,6 @@ class PacPool2d(_PacConvNd):
         channel_wise (bool): Default: False
         normalize_kernel (bool): Default: False
         out_channels (int): needs to be specified for channel_wise 'inv_*' (non-fixed) kernels. Default: -1
-
     Note:
         - kernel_size only accepts odd numbers
         - padding should not be larger than :math:`dilation * (kernel_size - 1) / 2`
