@@ -38,7 +38,7 @@ parser.add_argument('--n-trials', type=int, default=1,
 args = parser.parse_args()
 
 
-methods = ['sort_smooth', 'largest_gap', 'matrix_completion', 'usvd', 'sba', 'fgwb', 'sfgwb']
+methods = ['sba', 'sort_smooth', 'largest_gap', 'matrix_completion', 'usvd', 'wb', 'fgwb']
 
 errors = np.zeros((10, len(methods), args.n_trials))
 for i in range(10):

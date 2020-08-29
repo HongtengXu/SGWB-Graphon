@@ -120,7 +120,7 @@ def estimate_graphon(graphs: List[np.ndarray], method, args):
                                           ws=ws,
                                           alpha=args.alpha,
                                           inner_iters=args.inner_iters,
-                                          outer_iters=args.outer_iters,
+                                          outer_iters=1,
                                           beta=args.beta,
                                           gamma=args.gamma)
     elif method == 'fgwb':
@@ -134,6 +134,15 @@ def estimate_graphon(graphs: List[np.ndarray], method, args):
                                  outer_iters=args.outer_iters,
                                  beta=args.beta,
                                  gamma=args.gamma)
+    elif method == 'wb':
+        ws = np.ones((len(aligned_graphs),)) / len(aligned_graphs)
+        graphon = w_barycenter(aligned_graphs,
+                               aligned_ps=normalized_node_degrees,
+                               p_b=p_b,
+                               res=args.r,
+                               ws=ws,
+                               inner_iters=args.inner_iters,
+                               beta=args.beta)
     else:
         graphon = sorted_smooth(aligned_graphs, res=args.r, h=block_size)
 
@@ -512,6 +521,43 @@ def smoothed_fgw_barycenter(aligned_graphs: List[np.ndarray],
             cost_i /= np.max(cost_i)
             trans[i] = proximal_ot(cost_i, p_b, aligned_ps[i], iters=inner_iters, beta=beta, prior=trans[i])
 
+    barycenter[barycenter > 1] = 1
+    barycenter[barycenter < 0] = 0
+    graphon = cv2.resize(barycenter, dsize=(res, res), interpolation=cv2.INTER_LINEAR)
+    # graphon /= np.max(graphon)
+    return graphon
+
+
+def w_barycenter(aligned_graphs: List[np.ndarray],
+                 aligned_ps: List[np.ndarray],
+                 p_b: np.ndarray,
+                 res: int,
+                 ws: np.ndarray,
+                 inner_iters: int,
+                 beta: float) -> np.ndarray:
+    """
+    Calculate Wasserstein barycenter
+
+    :param aligned_graphs: a list of (Ni, Ni) adjacency matrices
+    :param aligned_ps: a list of (Ni, 1) distributions
+    :param p_b: (Nb, 1) distribution
+    :param res: the resolution of graphon
+    :param ws: (K, ) weights
+    :param inner_iters: the number of sinkhorn iterations
+    :param beta: the weight of proximal term
+    :return:
+    """
+    cost_ps = []
+    trans = []
+    for p in aligned_ps:
+        cost_p = p_b ** 2 + (p ** 2).T - 2 * (p_b @ p.T)
+        cost_p /= np.max(cost_p)
+        cost_ps.append(cost_p)
+        tran = proximal_ot(cost_p, p_b, p, iters=inner_iters, beta=beta)
+        trans.append(tran)
+
+    averaged_graph = averaging_graphs(aligned_graphs, trans, ws)
+    barycenter = averaged_graph / (p_b @ p_b.T)
     barycenter[barycenter > 1] = 1
     barycenter[barycenter < 0] = 0
     graphon = cv2.resize(barycenter, dsize=(res, res), interpolation=cv2.INTER_LINEAR)
