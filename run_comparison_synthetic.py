@@ -2,7 +2,7 @@ import argparse
 import numpy as np
 import os
 import pickle
-
+import time
 import methods.learner as learner
 import methods.simulator as simulator
 
@@ -10,7 +10,7 @@ import methods.simulator as simulator
 parser = argparse.ArgumentParser(description='Comparison for various methods on synthetic data')
 parser.add_argument('--f-result', type=str,
                     default='results',
-                    help='the root path saving 2D faces')
+                    help='the root path saving learning results')
 parser.add_argument('--r', type=int,
                     default=1000,
                     help='the resolution of graphon')
@@ -20,10 +20,12 @@ parser.add_argument('--num-graphs', type=int,
 parser.add_argument('--num-nodes', type=int, default=200,
                     help='the number of nodes per graph')
 parser.add_argument('--graph-size', type=str, default='random',
-                    help='the destination folder saving face masks')
-parser.add_argument('--threshold', type=float, default=0.1,
-                    help='the destination folder saving face landmarks')
-parser.add_argument('--alpha', type=float, default=0.001,
+                    help='the size of each graph, random or fixed')
+parser.add_argument('--threshold-sba', type=float, default=0.1,
+                    help='the threshold of sba method')
+parser.add_argument('--threshold-usvt', type=float, default=0.1,
+                    help='the threshold of usvt method')
+parser.add_argument('--alpha', type=float, default=0.0003,
                     help='the weight of smoothness regularizer')
 parser.add_argument('--beta', type=float, default=5e-3,
                     help='the weight of proximal term')
@@ -38,10 +40,10 @@ parser.add_argument('--n-trials', type=int, default=1,
 args = parser.parse_args()
 
 
-methods = ['sba', 'sort_smooth', 'largest_gap', 'matrix_completion', 'usvd', 'wb', 'fgwb']
+methods = ['SBA', 'SAS', 'LG', 'MC', 'USVT', 'GWB', 'SGWB', 'FGWB', 'SFGWB']
 
-errors = np.zeros((10, len(methods), args.n_trials))
-for i in range(10):
+errors = np.zeros((13, len(methods), args.n_trials))
+for i in range(13):
     graphon = simulator.synthesize_graphon(r=args.r, type_idx=i)
     simulator.visualize_graphon(graphon, save_path=os.path.join(args.f_result, 'graphon_{}.pdf'.format(i)))
 
@@ -55,15 +57,19 @@ for i in range(10):
         #                                      save_path=os.path.join(args.f_result, 'adj_{}_{}.pdf'.format(i, n)))
 
         for m in range(len(methods)):
-            estimation = learner.estimate_graphon(graphs, method=methods[m], args=args)
+            since = time.time()
+            _, estimation = learner.estimate_graphon(graphs, method=methods[m], args=args)
             simulator.visualize_graphon(estimation,
+                                        title=methods[m],
                                         save_path=os.path.join(args.f_result,
                                                                'estimation_{}_{}_{}.pdf'.format(i, n, methods[m])))
-            errors[i, m, n] = simulator.mean_square_error(graphon, estimation)
-            print('Data {}\tTrial {}\tMethod={}\tError={:.3f}'.format(i, n, methods[m], errors[i, m, n]))
+            if m <= 8:
+                errors[i, m, n] = simulator.mean_square_error(graphon, estimation)
+            else:
+                errors[i, m, n] = simulator.gw_distance(graphon, estimation)
+            print('Data {}\tTrial {}\tMethod={}\tError={:.3f}\tTime={:.3f}sec'.format(
+                i, n, methods[m], errors[i, m, n], time.time() - since))
 
 print(np.mean(errors, axis=2))
 with open(os.path.join(args.f_result, 'results_synthetic.pkl'), 'wb') as f:
     pickle.dump(errors, f)
-
-

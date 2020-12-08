@@ -51,6 +51,7 @@ def align_graphs(graphs: List[np.ndarray],
         sorted_graph = sorted_graph[:, idx]
 
         if padding:
+            # normalized_node_degree = np.ones((max_num, 1)) / max_num
             normalized_node_degree = np.zeros((max_num, 1))
             normalized_node_degree[:num_i, :] = sorted_node_degree
             aligned_graph = np.zeros((max_num, max_num))
@@ -58,6 +59,8 @@ def align_graphs(graphs: List[np.ndarray],
             normalized_node_degrees.append(normalized_node_degree)
             aligned_graphs.append(aligned_graph)
         else:
+            # normalized_node_degree = np.ones(sorted_node_degree.shape) / sorted_node_degree.shape[0]
+            # normalized_node_degrees.append(normalized_node_degree)
             normalized_node_degrees.append(sorted_node_degree)
             aligned_graphs.append(sorted_graph)
 
@@ -89,67 +92,77 @@ def estimate_target_distribution(probs: List[np.ndarray], dim_t: int = None) -> 
     return p_t
 
 
-def estimate_graphon(graphs: List[np.ndarray], method, args):
-    if method == 'sfgwb' or method == 'fgwb':
+def estimate_graphon(graphs: List[np.ndarray], method, args) -> Tuple[np.ndarray, np.ndarray]:
+    if method == 'GWB' or method == 'SGWB' or method == 'FGWB' or method == 'SFGWB':
         aligned_graphs, normalized_node_degrees, max_num, min_num = align_graphs(graphs, padding=False)
     else:
         aligned_graphs, normalized_node_degrees, max_num, min_num = align_graphs(graphs, padding=True)
 
     block_size = int(np.log2(max_num) + 1)
     num_blocks = int(max_num / block_size)
-    print(min_num, max_num, block_size, num_blocks)
     p_b = estimate_target_distribution(normalized_node_degrees, dim_t=num_blocks)
 
-    if method == 'sort_smooth':
-        graphon = sorted_smooth(aligned_graphs, res=args.r, h=block_size)
-    elif method == 'largest_gap':
-        graphon = largest_gap(aligned_graphs, res=args.r, k=num_blocks)
-    elif method == 'matrix_completion':
-        graphon = matrix_completion(aligned_graphs, res=args.r)
-    elif method == 'usvd':
-        graphon = universal_svd(aligned_graphs, res=args.r, threshold=args.threshold)
-    elif method == 'sba':
-        graphon = estimate_blocks_directed(aligned_graphs, res=args.r, threshold=args.threshold)
-    elif method == 'sfgwb':
+    if method == 'SAS':
+        stepfunc = sorted_smooth(aligned_graphs, h=block_size)
+    elif method == 'LG':
+        stepfunc = largest_gap(aligned_graphs, k=num_blocks)
+    elif method == 'MC':
+        stepfunc = matrix_completion(aligned_graphs)
+    elif method == 'USVT':
+        stepfunc = universal_svd(aligned_graphs, threshold=args.threshold_usvt)
+    elif method == 'SBA':
+        stepfunc = estimate_blocks_directed(aligned_graphs, threshold=args.threshold_sba)
+    elif method == 'SFGWB':
         # print(p_b, np.sum(p_b))
         ws = np.ones((len(aligned_graphs),)) / len(aligned_graphs)
-        graphon = smoothed_fgw_barycenter(aligned_graphs,
-                                          aligned_ps=normalized_node_degrees,
-                                          p_b=p_b,
-                                          res=args.r,
-                                          ws=ws,
-                                          alpha=args.alpha,
-                                          inner_iters=args.inner_iters,
-                                          outer_iters=1,
-                                          beta=args.beta,
-                                          gamma=args.gamma)
-    elif method == 'fgwb':
+        stepfunc = smoothed_fgw_barycenter(aligned_graphs,
+                                           aligned_ps=normalized_node_degrees,
+                                           p_b=p_b,
+                                           ws=ws,
+                                           alpha=args.alpha,
+                                           inner_iters=args.inner_iters,
+                                           outer_iters=args.outer_iters,
+                                           beta=args.beta,
+                                           gamma=args.gamma)
+    elif method == 'SGWB':
         ws = np.ones((len(aligned_graphs),)) / len(aligned_graphs)
-        graphon = fgw_barycenter(aligned_graphs,
-                                 aligned_ps=normalized_node_degrees,
-                                 p_b=p_b,
-                                 res=args.r,
-                                 ws=ws,
-                                 inner_iters=args.inner_iters,
-                                 outer_iters=args.outer_iters,
-                                 beta=args.beta,
-                                 gamma=args.gamma)
-    elif method == 'wb':
+        stepfunc = smoothed_fgw_barycenter(aligned_graphs,
+                                           aligned_ps=normalized_node_degrees,
+                                           p_b=p_b,
+                                           ws=ws,
+                                           alpha=args.alpha,
+                                           inner_iters=args.inner_iters,
+                                           outer_iters=args.outer_iters,
+                                           beta=args.beta,
+                                           gamma=1)
+    elif method == 'FGWB':
         ws = np.ones((len(aligned_graphs),)) / len(aligned_graphs)
-        graphon = w_barycenter(aligned_graphs,
-                               aligned_ps=normalized_node_degrees,
-                               p_b=p_b,
-                               res=args.r,
-                               ws=ws,
-                               inner_iters=args.inner_iters,
-                               beta=args.beta)
+        stepfunc = fgw_barycenter(aligned_graphs,
+                                  aligned_ps=normalized_node_degrees,
+                                  p_b=p_b,
+                                  ws=ws,
+                                  inner_iters=args.inner_iters,
+                                  outer_iters=args.outer_iters,
+                                  beta=args.beta,
+                                  gamma=args.gamma)
+    elif method == 'GWB':
+        ws = np.ones((len(aligned_graphs),)) / len(aligned_graphs)
+        stepfunc = fgw_barycenter(aligned_graphs,
+                                  aligned_ps=normalized_node_degrees,
+                                  p_b=p_b,
+                                  ws=ws,
+                                  inner_iters=args.inner_iters,
+                                  outer_iters=args.outer_iters,
+                                  beta=args.beta,
+                                  gamma=1)
     else:
-        graphon = sorted_smooth(aligned_graphs, res=args.r, h=block_size)
+        stepfunc = sorted_smooth(aligned_graphs, h=block_size)
 
-    return graphon
+    graphon = cv2.resize(stepfunc, dsize=(args.r, args.r), interpolation=cv2.INTER_LINEAR)
+    return stepfunc, graphon
 
 
-def sorted_smooth(aligned_graphs: List[np.ndarray], res: int, h: int) -> np.ndarray:
+def sorted_smooth(aligned_graphs: List[np.ndarray], h: int) -> np.ndarray:
     """
     Estimate a graphon by a sorting and smoothing method
 
@@ -159,9 +172,8 @@ def sorted_smooth(aligned_graphs: List[np.ndarray], res: int, h: int) -> np.ndar
     Proceedings of International Conference on Machine Learning, 2014.
 
     :param aligned_graphs: a list of (N, N) adjacency matrices
-    :param res: the resolution of graphon
     :param h: the block size
-    :return: a (r, r) estimation of graphon
+    :return: a (k, k) step function and  a (r, r) estimation of graphon
     """
     aligned_graphs = graph_numpy2tensor(aligned_graphs)
     num_graphs = aligned_graphs.size(0)
@@ -178,12 +190,10 @@ def sorted_smooth(aligned_graphs: List[np.ndarray], res: int, h: int) -> np.ndar
     graphon = graphon[0, 0, :, :].numpy()
     # total variation denoising
     graphon = denoise_tv_chambolle(graphon, weight=h)
-    graphon = cv2.resize(graphon, dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
     return graphon
 
 
-def largest_gap(aligned_graphs: List[np.ndarray], res: int, k: int) -> np.ndarray:
+def largest_gap(aligned_graphs: List[np.ndarray], k: int) -> np.ndarray:
     """
     Estimate a graphon by a stochastic block model based n empirical degrees
 
@@ -193,7 +203,6 @@ def largest_gap(aligned_graphs: List[np.ndarray], res: int, k: int) -> np.ndarra
     Electronic Journal of Statistics 6 (2012): 2574-2601.
 
     :param aligned_graphs: a list of (N, N) adjacency matrices
-    :param res: the resolution of graphon
     :param k: the number of blocks
     :return: a (r, r) estimation of graphon
     """
@@ -238,13 +247,11 @@ def largest_gap(aligned_graphs: List[np.ndarray], res: int, k: int) -> np.ndarra
             for r in range(rows.size(0)):
                 for c in range(cols.size(0)):
                     graphon[rows[r], cols[c]] = probability[i, j]
-
-    graphon = cv2.resize(graphon.numpy(), dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
+    graphon = graphon.numpy()
     return graphon
 
 
-def universal_svd(aligned_graphs: List[np.ndarray], res: int, threshold: float = 2.02) -> np.ndarray:
+def universal_svd(aligned_graphs: List[np.ndarray], threshold: float = 2.02) -> np.ndarray:
     """
     Estimate a graphon by universal singular value thresholding.
 
@@ -254,7 +261,6 @@ def universal_svd(aligned_graphs: List[np.ndarray], res: int, threshold: float =
     The Annals of Statistics 43.1 (2015): 177-214.
 
     :param aligned_graphs: a list of (N, N) adjacency matrices
-    :param res: the resolution of graphon
     :param threshold: the threshold for singular values
     :return: graphon: the estimated (r, r) graphon model
     """
@@ -275,12 +281,11 @@ def universal_svd(aligned_graphs: List[np.ndarray], res: int, threshold: float =
     graphon = u @ torch.diag(s) @ torch.t(v)
     graphon[graphon > 1] = 1
     graphon[graphon < 0] = 0
-    graphon = cv2.resize(graphon.numpy(), dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
+    graphon = graphon.numpy()
     return graphon
 
 
-def matrix_completion(aligned_graphs: List[np.ndarray], res: int, rank: int = None) -> np.ndarray:
+def matrix_completion(aligned_graphs: List[np.ndarray], rank: int = None) -> np.ndarray:
     """
     Estimate the graphon by matrix completion
 
@@ -290,7 +295,6 @@ def matrix_completion(aligned_graphs: List[np.ndarray], res: int, rank: int = No
     IEEE transactions on information theory 56.6 (2010): 2980-2998.
 
     :param aligned_graphs: a list of (N, N) adjacency matrices
-    :param res: the resolution of graphon
     :param rank: the rank of adjacency matrix
     :return: graphon: the estimated graphon model
     """
@@ -314,8 +318,7 @@ def matrix_completion(aligned_graphs: List[np.ndarray], res: int, rank: int = No
     graphon = (u[:, :rank] @ torch.diag(s[:rank]) @ torch.t(v[:, :rank]) + 1) / 2
     graphon[graphon > 1] = 1
     graphon[graphon < 0] = 0
-    graphon = cv2.resize(graphon.numpy(), dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
+    graphon = graphon.numpy()
     return graphon
 
 
@@ -355,7 +358,7 @@ def guess_rank(matrix: torch.Tensor) -> int:
     return max([r1.item(), r2.item()])
 
 
-def estimate_blocks_directed(aligned_graphs: List[np.ndarray], res: int, threshold: float) -> np.ndarray:
+def estimate_blocks_directed(aligned_graphs: List[np.ndarray], threshold: float) -> np.ndarray:
     """
     Estimate a graphon by stochastic block approximation.
 
@@ -365,7 +368,6 @@ def estimate_blocks_directed(aligned_graphs: List[np.ndarray], res: int, thresho
     Advances in Neural Information Processing Systems 2013.
 
     :param aligned_graphs: a list of (N, N) adjacency matrices
-    :param res: the resolution of graphon
     :param threshold: the threshold for singular values
     :return: graphon: the estimated (r, r) graphon model
     """
@@ -430,22 +432,22 @@ def estimate_blocks_directed(aligned_graphs: List[np.ndarray], res: int, thresho
             value = dhat[0]
             idx = 0
         else:
-            value, idx = torch.min(dhat)
+            value, idx = torch.min(dhat, dim=0)
+            idx = idx.item()
 
         if value < threshold:
             blocks[idx].append(i)
         else:
-            blocks[len(pivot_idx) + 1] = [i]
+            blocks[len(pivot_idx)] = [i]
             pivot_idx.append(i)
 
     num_blocks = len(blocks)
     for key in blocks.keys():
         tmp = np.array(blocks[key])
         blocks[key] = torch.from_numpy(tmp).long()
-        # blocks[key] = torch.FloatTensor(tmp)
-        # blocks[key] = torch.LongTensor(blocks[key])
+    print(num_blocks)
 
-    # derive the graphon by stochastic block model
+    # # derive the graphon by stochastic block model
     probability = torch.zeros(num_blocks, num_blocks)
     graphon = torch.zeros(num_nodes, num_nodes)
     for i in range(num_blocks):
@@ -459,15 +461,13 @@ def estimate_blocks_directed(aligned_graphs: List[np.ndarray], res: int, thresho
                 for c in range(cols.size(0)):
                     graphon[rows[r], cols[c]] = probability[i, j]
 
-    graphon = cv2.resize(graphon.numpy(), dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
+    graphon = graphon.numpy()
     return graphon
 
 
 def smoothed_fgw_barycenter(aligned_graphs: List[np.ndarray],
                             aligned_ps: List[np.ndarray],
                             p_b: np.ndarray,
-                            res: int,
                             ws: np.ndarray,
                             alpha: float,
                             inner_iters: int,
@@ -480,7 +480,6 @@ def smoothed_fgw_barycenter(aligned_graphs: List[np.ndarray],
     :param aligned_graphs: a list of (Ni, Ni) adjacency matrices
     :param aligned_ps: a list of (Ni, 1) distributions
     :param p_b: (Nb, 1) distribution
-    :param res: the resolution of graphon
     :param ws: (K, ) weights
     :param alpha: the weight of smoothness regularizer
     :param inner_iters: the number of sinkhorn iterations
@@ -490,85 +489,48 @@ def smoothed_fgw_barycenter(aligned_graphs: List[np.ndarray],
     :return:
     """
     nb = p_b.shape[0]
-    dmat = np.concatenate((np.eye(nb - 1), np.zeros((nb - 1, 1))), axis=1) - \
-        np.concatenate((np.zeros((nb - 1, 1)), np.eye(nb - 1)), axis=1)  # (nb - 1, nb)
+    dmat = 2 * np.concatenate((np.zeros((nb - 2, 1)), np.eye(nb - 2), np.zeros((nb - 2, 1))), axis=1) - \
+        np.concatenate((np.zeros((nb - 2, 2)), np.eye(nb - 2)), axis=1) - \
+        np.concatenate((np.eye(nb - 2), np.zeros((nb - 2, 2))), axis=1)  # (nb - 2, nb)
+
     lmat = alpha * (dmat.T @ dmat)
     us, ss, _ = np.linalg.svd(lmat)
 
-    numerator = ss ** 2 + p_b[:, 0] ** 2 + 1e-16
+    numerator = ss ** 2 + p_b[:, 0] ** 2  # + 1e-16
     lmat2 = us @ np.diag(ss / numerator) @ us.T
-    pmat2 = us @ np.diag(p_b[:, 0] / numerator) @ us.T
+    pmat2 = np.diag(p_b[:, 0] / numerator)
 
     cost_ps = []
     trans = []
+    priors = []
     for p in aligned_ps:
         cost_p = p_b ** 2 + (p ** 2).T - 2 * (p_b @ p.T)
         cost_p /= np.max(cost_p)
         cost_ps.append(cost_p)
         tran = proximal_ot(cost_p, p_b, p, iters=inner_iters, beta=beta)
         trans.append(tran)
+        priors.append(tran + 1e-16)
 
     barycenter = None
     for o in range(outer_iters):
         # update smoothed barycenter
         averaged_graph = averaging_graphs(aligned_graphs, trans, ws)
         barycenter = lmat2 @ averaged_graph @ lmat2.T + pmat2 @ averaged_graph @ pmat2.T
-
         # update optimal transports
         for i in range(len(aligned_graphs)):
             cost_i = gw_cost(barycenter, aligned_graphs[i], trans[i], p_b, aligned_ps[i])
             cost_i = gamma * cost_i + (1 - gamma) * cost_ps[i]
             cost_i /= np.max(cost_i)
-            trans[i] = proximal_ot(cost_i, p_b, aligned_ps[i], iters=inner_iters, beta=beta, prior=trans[i])
+            trans[i] = proximal_ot(cost_i, p_b, aligned_ps[i], iters=inner_iters, beta=beta, prior=priors[i])
 
     barycenter[barycenter > 1] = 1
     barycenter[barycenter < 0] = 0
-    graphon = cv2.resize(barycenter, dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
-    return graphon
-
-
-def w_barycenter(aligned_graphs: List[np.ndarray],
-                 aligned_ps: List[np.ndarray],
-                 p_b: np.ndarray,
-                 res: int,
-                 ws: np.ndarray,
-                 inner_iters: int,
-                 beta: float) -> np.ndarray:
-    """
-    Calculate Wasserstein barycenter
-
-    :param aligned_graphs: a list of (Ni, Ni) adjacency matrices
-    :param aligned_ps: a list of (Ni, 1) distributions
-    :param p_b: (Nb, 1) distribution
-    :param res: the resolution of graphon
-    :param ws: (K, ) weights
-    :param inner_iters: the number of sinkhorn iterations
-    :param beta: the weight of proximal term
-    :return:
-    """
-    cost_ps = []
-    trans = []
-    for p in aligned_ps:
-        cost_p = p_b ** 2 + (p ** 2).T - 2 * (p_b @ p.T)
-        cost_p /= np.max(cost_p)
-        cost_ps.append(cost_p)
-        tran = proximal_ot(cost_p, p_b, p, iters=inner_iters, beta=beta)
-        trans.append(tran)
-
-    averaged_graph = averaging_graphs(aligned_graphs, trans, ws)
-    barycenter = averaged_graph / (p_b @ p_b.T)
-    barycenter[barycenter > 1] = 1
-    barycenter[barycenter < 0] = 0
-    graphon = cv2.resize(barycenter, dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
-    return graphon
+    return barycenter
 
 
 def fgw_barycenter(aligned_graphs: List[np.ndarray],
                    aligned_ps: List[np.ndarray],
                    p_b: np.ndarray,
-                   res: int,
                    ws: np.ndarray,
                    inner_iters: int,
                    outer_iters: int,
@@ -580,7 +542,6 @@ def fgw_barycenter(aligned_graphs: List[np.ndarray],
     :param aligned_graphs: a list of (Ni, Ni) adjacency matrices
     :param aligned_ps: a list of (Ni, 1) distributions
     :param p_b: (Nb, 1) distribution
-    :param res: the resolution of graphon
     :param ws: (K, ) weights
     :param inner_iters: the number of sinkhorn iterations
     :param outer_iters: the number of barycenter iterations
@@ -590,12 +551,14 @@ def fgw_barycenter(aligned_graphs: List[np.ndarray],
     """
     cost_ps = []
     trans = []
+    priors = []
     for p in aligned_ps:
         cost_p = p_b ** 2 + (p ** 2).T - 2 * (p_b @ p.T)
         cost_p /= np.max(cost_p)
         cost_ps.append(cost_p)
         tran = proximal_ot(cost_p, p_b, p, iters=inner_iters, beta=beta)
         trans.append(tran)
+        priors.append(tran + 1e-16)
 
     barycenter = None
     for o in range(outer_iters):
@@ -608,13 +571,11 @@ def fgw_barycenter(aligned_graphs: List[np.ndarray],
             cost_i = gw_cost(barycenter, aligned_graphs[i], trans[i], p_b, aligned_ps[i])
             cost_i = gamma * cost_i + (1 - gamma) * cost_ps[i]
             cost_i /= np.max(cost_i)
-            trans[i] = proximal_ot(cost_i, p_b, aligned_ps[i], iters=inner_iters, beta=beta, prior=trans[i])
+            trans[i] = proximal_ot(cost_i, p_b, aligned_ps[i], iters=inner_iters, beta=beta, prior=priors[i])
 
     barycenter[barycenter > 1] = 1
     barycenter[barycenter < 0] = 0
-    graphon = cv2.resize(barycenter, dsize=(res, res), interpolation=cv2.INTER_LINEAR)
-    # graphon /= np.max(graphon)
-    return graphon
+    return barycenter
 
 
 def averaging_graphs(aligned_graphs: List[np.ndarray], trans: List[np.ndarray], ws: np.ndarray) -> np.ndarray:
@@ -652,7 +613,7 @@ def proximal_ot(cost: np.ndarray,
         trans: a (n1, n2) optimal transport matrix
     """
     if prior is not None:
-        kernel = np.exp(-cost / beta)  # * prior
+        kernel = np.exp(-cost / beta) * prior
     else:
         kernel = np.exp(-cost / beta)
 
